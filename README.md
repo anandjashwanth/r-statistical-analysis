@@ -3,8 +3,8 @@
 Two applied statistics projects in R (tidyverse, ggplot2, emmeans, car), each written as a reproducible R Markdown report for a reader who knows R but not the data. Both follow the same approach: check data integrity, choose the right test or model, report results with standard statistical conventions, and explain what they mean in plain English.
 
 ## 1. Which London Underground line should trial a new cooling system?
-[`underground-temperatures/`](underground-temperatures/)
-
+   [View the report](https://anandjashwanth.github.io/r-statistical-analysis/underground_temperatures.html) · [R Markdown code](underground_temperatures.Rmd)
+   
 **Question:** Using monthly temperature readings across deep-level Tube lines, is the Bakerloo or Central line the better candidate for a cooling trial?
 
 **Method:** data validation (missing values, duplicates, category checks), outlier identification and removal with documented reasons, descriptive statistics by line, violin plots, and Welch two-sample t-tests (all months and summer only).
@@ -15,7 +15,7 @@ Two applied statistics projects in R (tidyverse, ggplot2, emmeans, car), each wr
 - Recommendation: target Bakerloo for year-round relief, but plan network-wide measures for summer heat.
 
 ## 2. Credit, wellbeing and a store trial
-[`loans-wellbeing-and-store-trial/`](loans-wellbeing-and-store-trial/)
+   [View the report](https://anandjashwanth.github.io/r-statistical-analysis/loans_wellbeing_and_store_trial.html) · [R Markdown code](loans_wellbeing_and_store_trial.Rmd)
 
 ### Part 1: Payday loans, credit scores and wellbeing
 **Question:** What predicts an applicant's credit score and self-reported wellbeing, and does higher income soften the credit-score penalty of an adverse credit event?
