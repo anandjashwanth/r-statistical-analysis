@@ -1,0 +1,953 @@
+---
+title: "Credit, wellbeing and a store trial: regression and repeated-measures analysis"
+author: 'Jashwanth Anand Shankar'
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+---
+
+```{r}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(Hmisc)
+library(emmeans)
+library(gridExtra)
+library(car)
+
+options(width = 100)
+
+```
+
+---
+
+# Use of Generative AI
+
+Generative AI (Claude and ChatGPT) was used for proofreading, presentation and code structure. All model choices, statistical reasoning, interpretation and conclusions are my own.
+
+---
+
+# Part 1: Payday loans, credit scores and wellbeing
+
+The dataset contains one row per loan applicant. The variables include an applicant identifier, loan outcome, adverse credit event status, credit score, wellbeing score, and weekly income. The initial data inspection confirms the variable names and allows the data types imported by R to be checked before further analysis.
+
+```{r}
+loans.raw <- read_csv("loans.txt")
+
+glimpse(loans.raw)
+```
+```{r}
+# Data dictionary for loans dataset
+tibble(
+  Variable    = c("ID", "loan", "adverse.credit.event",
+                  "credit_score", "wellbeing", "income"),
+  Type        = c("Numeric", "Binary (0/1)", "Binary (0/1)",
+                  "Numeric", "Ordinal (1–7)", "Numeric"),
+  Description = c(
+    "Unique applicant identifier",
+    "Loan application outcome: 1 = approved, 0 = rejected",
+    "Adverse credit event (e.g. default, late payment): 1 = yes, 0 = no",
+    "Credit score from linked credit file",
+    "Self-reported wellbeing: 1 (lowest) to 7 (highest)",
+    "Weekly income (£)"
+  )
+)
+```
+
+```{r}
+loans.raw %>%
+  summarise(
+    n_rows = n(),
+    n_unique_id = n_distinct(ID),
+    duplicate_ids = n() - n_distinct(ID),
+    missing_ID = sum(is.na(ID)),
+    missing_loan = sum(is.na(loan)),
+    missing_adverse_event = sum(is.na(adverse.credit.event)),
+    missing_credit_score = sum(is.na(credit_score)),
+    missing_wellbeing = sum(is.na(wellbeing)),
+    missing_income = sum(is.na(income))
+  )
+```
+The dataset contains 3,000 observations and 3,000 unique applicant IDs, indicating that each applicant appears once. No missing values are present in the variables required for this analysis. This supports the use of the full dataset for the credit-score analysis.No duplicate applicant IDs were identified. Therefore, no applicant appears more than once in the dataset, and no deduplication is required before modelling.
+
+Category frequencies confirm the distribution of the binary indicators and identify the wellbeing anomaly.
+
+```{r}
+loans.raw %>%
+  count(loan)
+
+loans.raw %>%
+  count(adverse.credit.event)
+
+loans.raw %>%
+  count(wellbeing)
+```
+Both loan-outcome and adverse-event categories are well populated. The wellbeing count confirms four zero-coded records outside the 1–7 scale.
+
+```{r}
+loans.raw %>%
+  filter(wellbeing < 1 | wellbeing > 7)
+
+loans.raw %>%
+  filter(credit_score == 0 | credit_score == 999)
+
+loans.raw %>%
+  summarise(
+    min_credit_score = min(credit_score, na.rm = TRUE),
+    max_credit_score = max(credit_score, na.rm = TRUE),
+    min_income = min(income, na.rm = TRUE),
+    max_income = max(income, na.rm = TRUE),
+    min_wellbeing = min(wellbeing, na.rm = TRUE),
+    max_wellbeing = max(wellbeing, na.rm = TRUE)
+  )
+```
+The four wellbeing outliers and the filter conditions for each analysis dataset are consistent with these checks.
+
+```{r}
+loans <- loans.raw %>%
+  mutate(
+    loan_status = factor(
+      loan,
+      levels = c(0, 1),
+      labels = c("Loan rejected", "Loan approved")
+    ),
+    adverse_event = factor(
+      adverse.credit.event,
+      levels = c(0, 1),
+      labels = c("No adverse event", "Adverse event")
+    ),
+    wellbeing_factor = factor(
+      wellbeing,
+      levels = 1:7,
+      ordered = TRUE
+    )
+  )
+
+loans.credit <- loans %>%
+  filter(
+    credit_score > 0,
+    !is.na(income),
+    !is.na(loan_status),
+    !is.na(adverse_event)
+  ) %>%
+  mutate(
+    income_c = income - mean(income)
+  )
+
+loans.wellbeing <- loans %>%
+  filter(
+    wellbeing >= 1,
+    wellbeing <= 7,
+    !is.na(wellbeing),
+    !is.na(income),
+    !is.na(credit_score),
+    !is.na(loan_status),
+    !is.na(adverse_event)
+  ) %>%
+  mutate(
+    wellbeing_numeric = wellbeing,
+    income_c = income - mean(income),
+    credit_score_c = credit_score - mean(credit_score)
+  )
+```
+
+loan and adverse.credit.event are converted to labelled factors so that regression coefficients represent group differences relative to the reference category. wellbeing is also factored (ordered) for the EDA bar chart and retained as numeric for the regression model. Income and credit score are mean-centred within each analysis dataset to make intercepts and categorical effects interpretable at average values. The credit-score analysis uses 2,990 applicants (10 excluded for credit_score = 0); the wellbeing analysis uses 2,996 (4 excluded for wellbeing = 0).
+
+Distributions of the continuous predictors and the response scale are inspected before modelling.
+
+```{r}
+p.credit <- ggplot(loans.credit, aes(x = credit_score)) +
+  geom_histogram(bins = 30) +
+  labs(
+    title = "Distribution of credit scores",
+    x = "Credit score",
+    y = "Frequency"
+  )
+
+p.income <- ggplot(loans.credit, aes(x = income)) +
+  geom_histogram(bins = 30) +
+  labs(
+    title = "Distribution of weekly income",
+    x = "Weekly income",
+    y = "Frequency"
+  )
+
+p.wellbeing <- ggplot(loans.wellbeing, aes(x = wellbeing_factor)) +
+  geom_bar() +
+  labs(
+    title = "Distribution of wellbeing scores",
+    x = "Wellbeing score",
+    y = "Frequency"
+  )
+
+grid.arrange(p.credit, p.income, p.wellbeing, ncol = 1)
+```
+
+Credit score is broadly unimodal; the excluded credit_score = 0 values are no longer present in loans.credit. Income is approximately symmetric. Wellbeing responses cluster in the 3–5 range, consistent with typical Likert distributions.
+
+```{r}
+# Rename these two objects (currently called p.loan and p.adverse)
+p.loan.dist <- ggplot(loans, aes(x = loan_status)) +
+  geom_bar() +
+  labs(
+    title = "Loan application outcome",
+    x     = "Loan status",
+    y     = "Frequency"
+  )
+
+p.adverse.dist <- ggplot(loans, aes(x = adverse_event)) +
+  geom_bar() +
+  labs(
+    title = "Adverse credit event status",
+    x     = "Adverse credit event",
+    y     = "Frequency"
+  )
+
+grid.arrange(p.loan.dist, p.adverse.dist, ncol = 2)
+```
+Both binary predictors have adequate cell counts in all categories, supporting their inclusion as model predictors.
+
+```{r}
+loans.credit %>%
+  summarise(
+    mean_credit_score = mean(credit_score),
+    sd_credit_score = sd(credit_score),
+    mean_income = mean(income),
+    sd_income = sd(income),
+    min_credit_score = min(credit_score),
+    max_credit_score = max(credit_score),
+    min_income = min(income),
+    max_income = max(income)
+  )
+```
+
+```{r}
+loans.wellbeing %>%
+  summarise(
+    mean_wellbeing = mean(wellbeing_numeric),
+    sd_wellbeing = sd(wellbeing_numeric),
+    min_wellbeing = min(wellbeing_numeric),
+    max_wellbeing = max(wellbeing_numeric)
+  )
+```
+
+```{r}
+loans.credit %>%
+  group_by(adverse_event) %>%
+  summarise(
+    n = n(),
+    mean_credit_score = mean(credit_score),
+    sd_credit_score = sd(credit_score),
+    mean_income = mean(income),
+    sd_income = sd(income),
+    .groups = "drop"
+  )
+```
+
+Applicants with an adverse credit event have a descriptively lower mean credit score (607 vs 655) despite near-identical mean income across groups (£301 for both), suggesting an independent adverse-event effect beyond income.
+
+```{r}
+loans.credit %>%
+  group_by(loan_status) %>%
+  summarise(
+    n = n(),
+    mean_credit_score = mean(credit_score),
+    sd_credit_score = sd(credit_score),
+    mean_income = mean(income),
+    sd_income = sd(income),
+    .groups = "drop"
+  )
+```
+Approved and rejected applicants show minimal mean credit score differences (632 vs 625), consistent with the non-significant loan_status coefficient in the regression below. The regression model is needed to estimate adjusted effects controlling simultaneously for income and adverse event status.
+
+Wellbeing is compared across the joint financial-status groupings before modelling.
+
+```{r}
+loans.wellbeing %>%
+  group_by(loan_status, adverse_event) %>%
+  summarise(
+    n = n(),
+    mean_wellbeing = mean(wellbeing_numeric),
+    sd_wellbeing = sd(wellbeing_numeric),
+    mean_income = mean(income),
+    mean_credit_score = mean(credit_score),
+    .groups = "drop"
+  )
+```
+The largest wellbeing gap separates approved/no-adverse-event (5.20) from rejected/adverse-event applicants (3.47), motivating adjustment for both categorical predictors simultaneously.
+
+```{r}
+wb.desc.summary <- loans.wellbeing %>%
+  group_by(loan_status, adverse_event) %>%
+  summarise(
+    n              = n(),
+    mean_wellbeing = mean(wellbeing_numeric),
+    sd_wellbeing   = sd(wellbeing_numeric),
+    se_wellbeing   = sd_wellbeing / sqrt(n),
+    lower          = mean_wellbeing - 1.96 * se_wellbeing,
+    upper          = mean_wellbeing + 1.96 * se_wellbeing,
+    .groups        = "drop"
+  )
+
+ggplot(
+  wb.desc.summary,
+  aes(
+    x      = loan_status,
+    y      = mean_wellbeing,
+    ymin   = lower,
+    ymax   = upper,
+    colour = adverse_event,
+    group  = adverse_event
+  )
+) +
+  geom_point() +
+  geom_line() +
+  geom_linerange() +
+  labs(
+    title    = "Mean wellbeing by loan outcome and adverse credit event",
+    subtitle = "Error bars show approximate 95% CIs (mean ± 1.96 × SE)",
+    x        = "Loan outcome",
+    y        = "Mean wellbeing score",
+    colour   = "Adverse credit event"
+  )
+```
+Loan approval is associated with higher wellbeing in both adverse-event groups; an adverse credit event is associated with a downward shift regardless of loan outcome. The pattern motivates inclusion of both predictors in the adjusted regression below.
+
+Pairwise Pearson correlations provide unadjusted associations among the continuous variables. The regression models below give adjusted estimates.
+
+```{r}
+numeric.variables <- loans.wellbeing %>%
+  select(
+    credit_score,
+    income,
+    wellbeing_numeric
+  )
+
+rcorr(as.matrix(numeric.variables))
+```
+Income and credit score are moderately correlated, r = .57, p < .001. Both show weak associations with wellbeing (r = .08 and r = −.03 respectively); continuous financial measures alone explain little wellbeing variation. The income–credit score correlation is examined further in the scatter plot below, split by adverse event status.
+
+Credit score is regressed on mean-centred income, adverse credit event status, and loan approval status. Income is centred so that categorical effects are interpreted at mean income. loan_status is included as a statistical control: credit score typically influences loan decisions rather than the reverse, so this predictor is not interpreted causally. VIF values confirm no multicollinearity.
+
+```{r}
+m.credit.main <- lm(
+  credit_score ~ income_c + adverse_event + loan_status,
+  data = loans.credit
+)
+
+summary(m.credit.main)
+confint(m.credit.main)
+anova(m.credit.main)
+```
+```{r}
+vif(m.credit.main)
+```
+The model explains 41.6% of variance in credit score, F(3, 2986) = 708, p < .001. Income is the dominant predictor: each additional £1 of weekly income is associated with a 1.22-point increase in credit score, 95% CI [1.16, 1.28], p < .001. An adverse credit event is associated with a 47.7-point reduction, 95% CI [−53.4, −42.0], p < .001, adjusting for income and loan status. Loan approval status is not a significant independent predictor, b = 3.96, 95% CI [−1.76, 9.67], p = .175. VIF values (all < 1.02) confirm no multicollinearity.
+
+The mitigation question is addressed by adding an income × adverse_event interaction term. A significant interaction would indicate that the adverse-event credit-score penalty varies across income levels. Income is centred so the adverse_event main effect is interpretable at mean income.
+
+```{r}
+m.credit.interaction <- lm(
+  credit_score ~ income_c * adverse_event + loan_status,
+  data = loans.credit
+)
+
+summary(m.credit.interaction)
+confint(m.credit.interaction)
+anova(m.credit.main, m.credit.interaction)
+```
+The income × adverse_event interaction is negligible and non-significant: b = 0.036, 95% CI [−0.076, 0.148], p = .531. The model comparison confirms the interaction adds no explanatory value, F(1, 2985) = 0.393, p = .531. There is no evidence that higher income mitigates the adverse-event penalty on credit score.
+
+```{r}
+vif(m.credit.interaction)
+```
+The interaction-term VIFs (~2.19) reflect structural collinearity from the product term; centring income minimises this. The main effects remain interpretable.
+
+```{r}
+ggplot(loans.credit, aes(x = income, y = credit_score, colour = adverse_event)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(method = "lm") +
+  labs(
+    title = "Credit score by income and adverse credit event",
+    x = "Weekly income",
+    y = "Credit score",
+    colour = "Adverse credit event"
+  )
+```
+The regression lines are near-parallel across the income range in both groups. If income mitigated the adverse-event penalty, the lines would converge at higher incomes; they do not.
+```{r}
+income.values <- seq(
+  min(loans.credit$income_c),
+  max(loans.credit$income_c),
+  length.out = 100
+)
+
+credit.predictions <- tibble(
+  income_c = rep(income.values, times = 2),
+  adverse_event = factor(
+    rep(levels(loans.credit$adverse_event), each = length(income.values)),
+    levels = levels(loans.credit$adverse_event)
+  ),
+  loan_status = factor(
+    rep("Loan rejected", length(income.values) * 2),
+    levels = levels(loans.credit$loan_status)
+  )
+)
+
+credit.prediction.interval <- predict(
+  m.credit.interaction,
+  newdata = credit.predictions,
+  interval = "confidence"
+)
+
+credit.predictions <- credit.predictions %>%
+  mutate(
+    fit = credit.prediction.interval[, "fit"],
+    lwr = credit.prediction.interval[, "lwr"],
+    upr = credit.prediction.interval[, "upr"],
+    income = income_c + mean(loans.credit$income)
+  )
+
+ggplot(
+  credit.predictions,
+  aes(
+    x = income,
+    y = fit,
+    ymin = lwr,
+    ymax = upr,
+    colour = adverse_event,
+    fill = adverse_event
+  )
+) +
+  geom_ribbon(alpha = 0.20, colour = NA) +
+  geom_line() +
+  labs(
+    title = "Model-predicted credit score by income and adverse credit event",
+    subtitle = "Predictions hold loan status constant at loan rejected",
+    x = "Weekly income",
+    y = "Predicted credit score",
+    colour = "Adverse credit event",
+    fill = "Adverse credit event"
+  )
+```
+
+Model-predicted credit scores show a constant ~48-point gap between groups across the full income range. The gap neither narrows nor widens, providing visual confirmation of the null interaction.
+
+```{r}
+credit.diagnostics <- tibble(
+  fitted_values = fitted(m.credit.interaction),
+  residuals = resid(m.credit.interaction)
+)
+
+p.credit.resid <- ggplot(credit.diagnostics, aes(x = fitted_values, y = residuals)) +
+  geom_point(alpha = 0.25) +
+  geom_hline(yintercept = 0, lty = 3) +
+  labs(
+    title = "Credit-score model: residuals vs fitted values",
+    x = "Fitted values",
+    y = "Residuals"
+  )
+
+p.credit.qq <- ggplot(credit.diagnostics, aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line() +
+  labs(
+    title = "Credit-score model: Q-Q plot",
+    x = "Theoretical quantiles",
+    y = "Sample quantiles"
+  )
+
+grid.arrange(p.credit.resid, p.credit.qq, ncol = 2)
+```
+
+Residuals are broadly symmetric with no systematic pattern across fitted values. Slight Q-Q tail deviation is expected given the truncated credit score distribution; this does not undermine the validity of the main-effects estimates.
+
+Wellbeing is regressed on loan status, adverse credit event status, and mean-centred income and credit score. The 1–7 scale is treated as approximately continuous; with seven ordered categories and n = 2,996 the linear approximation produces interpretable average group-difference estimates. Some non-normality in residuals is expected and is addressed in the diagnostics below.
+
+```{r}
+m.wellbeing <- lm(
+  wellbeing_numeric ~ income_c + credit_score_c + loan_status + adverse_event,
+  data = loans.wellbeing
+)
+
+summary(m.wellbeing)
+confint(m.wellbeing)
+anova(m.wellbeing)
+vif(m.wellbeing)
+```
+
+The model explains 27.6% of wellbeing variance, F(4, 2991) = 284.9, p < .001. Loan approval is associated with 0.70-point higher wellbeing, 95% CI [0.63, 0.78], p < .001. An adverse credit event is associated with 1.03-point lower wellbeing, 95% CI [−1.11, −0.95], p < .001. Neither income nor credit score contributes additional explanatory power after these categorical variables are included (p = .136 and p = .937 respectively). VIF values (all ≤ 1.60) confirm no multicollinearity.
+
+The adverse-event effect (−1.03 points) is larger in magnitude than the loan-approval benefit (+0.70 points), suggesting financial setbacks carry a greater wellbeing impact than access to credit.
+
+```{r}
+emm.loan <- emmeans(m.wellbeing, ~ loan_status)
+emm.adverse <- emmeans(m.wellbeing, ~ adverse_event)
+
+confint(emm.loan)
+
+confint(emm.adverse)
+```
+
+Adjusted mean wellbeing: 3.98, 95% CI [3.93, 4.04] (loan rejected) vs 4.68, 95% CI [4.63, 4.74] (loan approved). For adverse event status: 4.85, 95% CI [4.79, 4.91] (no adverse event) vs 3.82, 95% CI [3.76, 3.87] (adverse event).
+
+```{r}
+pairs(emm.loan)
+confint(pairs(emm.loan))
+
+pairs(emm.adverse)
+confint(pairs(emm.adverse))
+```
+
+Approved applicants score 0.70 wellbeing points higher than rejected applicants, 95% CI [0.63, 0.78], t(2991) = 17.77, p < .001. Applicants without an adverse credit event score 1.03 points higher than those with one, 95% CI [0.95, 1.11], t(2991) = 25.08, p < .001.
+
+```{r}
+emm.loan.summary <- summary(emm.loan)
+emm.adverse.summary <- summary(emm.adverse)
+
+p.loan <- ggplot(
+  emm.loan.summary,
+  aes(
+    x = loan_status,
+    y = emmean,
+    ymin = lower.CL,
+    ymax = upper.CL
+  )
+) +
+  geom_point() +
+  geom_linerange() +
+  labs(
+    title = "Adjusted wellbeing by loan outcome",
+    subtitle = "Error bars are 95% confidence intervals",
+    x = "Loan outcome",
+    y = "Estimated wellbeing"
+  )
+
+p.adverse <- ggplot(
+  emm.adverse.summary,
+  aes(
+    x = adverse_event,
+    y = emmean,
+    ymin = lower.CL,
+    ymax = upper.CL
+  )
+) +
+  geom_point() +
+  geom_linerange() +
+  labs(
+    title = "Adjusted wellbeing by adverse credit event",
+    subtitle = "Error bars are 95% confidence intervals",
+    x = "Adverse credit event status",
+    y = "Estimated wellbeing"
+  )
+
+grid.arrange(p.loan, p.adverse, ncol = 2)
+```
+
+Both effects are estimated with high precision. The adverse-event reduction (−1.03 points) is visibly larger than the loan-approval benefit (+0.70 points).
+
+```{r}
+wellbeing.diagnostics <- tibble(
+  fitted_values = fitted(m.wellbeing),
+  residuals = resid(m.wellbeing)
+)
+
+p.wellbeing.resid <- ggplot(wellbeing.diagnostics, aes(x = fitted_values, y = residuals)) +
+  geom_point(alpha = 0.25) +
+  geom_hline(yintercept = 0, lty = 3) +
+  labs(
+    title = "Wellbeing model: residuals vs fitted values",
+    x = "Fitted values",
+    y = "Residuals"
+  )
+
+p.wellbeing.qq <- ggplot(wellbeing.diagnostics, aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line() +
+  labs(
+    title = "Wellbeing model: Q-Q plot",
+    x = "Theoretical quantiles",
+    y = "Sample quantiles"
+  )
+
+grid.arrange(p.wellbeing.resid, p.wellbeing.qq, ncol = 2)
+```
+
+The bounded response scale produces a stepped residual pattern at extreme fitted values and corresponding Q-Q tail departure. These are expected properties of a continuous approximation to an ordinal outcome and do not undermine the group-difference estimates.
+
+Income and adverse credit event status are the primary predictors of credit score. Each additional £1 of weekly income is associated with a 1.22-point credit score increase, p < .001; an adverse credit event with a 47.7-point reduction, p < .001. Loan approval status adds no independent predictive value. There is no evidence that income moderates the adverse-event penalty: the interaction term is negligible (b = 0.036, p = .531) and the model comparison confirms no improvement in fit, F(1, 2985) = 0.393, p = .531.
+
+Adverse credit events and loan approval are the dominant predictors of self-reported wellbeing. The adverse-event penalty (−1.03 points, p < .001) exceeds the loan-approval benefit (+0.70 points, p < .001); income and credit score contribute no additional explanatory power. Financial status events — rather than the level of continuous financial measures — drive both credit standing and personal wellbeing in this dataset.
+
+---
+
+# Part 2: Did a new store layout increase sales?
+
+This analysis examines whether a new store layout and signage design affected store sales. The data contain repeated quarterly sales observations for each outlet. Because the same stores are measured across Q1, Q2, Q3, and Q4, the observations are not independent. A mixed repeated-measures ANOVA is therefore used, with quarter as the within-outlet factor and trial status as the between-outlet factor. The key question is whether the pattern of sales change across quarters differs between trial and control stores, especially after the intervention begins at Q3.
+
+```{r}
+sales.raw <- read_csv("Sales.txt")
+
+glimpse(sales.raw)
+```
+```{r}
+# Data dictionary for sales dataset
+tibble(
+  Variable    = c("Outlet_ID", "location", "trial",
+                  "quarter", "sales"),
+  Type        = c("Character", "Character", "Logical",
+                  "Character", "Numeric"),
+  Description = c(
+    "Unique store identifier",
+    "UK region in which the outlet is located",
+    "Trial allocation: TRUE = new layout and signage, FALSE = control",
+    "Reporting quarter: Q1, Q2, Q3, or Q4",
+    "Quarterly sales revenue (£)"
+  )
+)
+```
+
+
+Five variables: outlet identifier, location, a logical trial flag, quarter (Q1–Q4), and quarterly sales. The trial was implemented at the start of Q3.
+
+```{r}
+sales.raw %>%
+  summarise(
+    n_rows = n(),
+    n_outlets = n_distinct(Outlet_ID),
+    n_locations = n_distinct(location),
+    missing_outlet = sum(is.na(Outlet_ID)),
+    missing_location = sum(is.na(location)),
+    missing_trial = sum(is.na(trial)),
+    missing_quarter = sum(is.na(quarter)),
+    missing_sales = sum(is.na(sales)),
+    min_sales = min(sales),
+    max_sales = max(sales)
+  )
+```
+
+
+```{r}
+sales.raw %>%
+  group_by(Outlet_ID) %>%
+  summarise(
+    n_rows = n(),
+    n_quarters = n_distinct(quarter),
+    n_trial_values = n_distinct(trial),
+    n_locations = n_distinct(location),
+    .groups = "drop"
+  ) %>%
+  filter(
+    n_rows != 4 |
+      n_quarters != 4 |
+      n_trial_values != 1 |
+      n_locations != 1
+  )
+```
+
+Zero problematic rows confirm that the repeated-measures structure is complete and balanced: each outlet contributes exactly four observations with consistent trial allocation and location.
+
+Trial and quarter allocation balance is verified before modelling.
+
+```{r}
+sales.raw %>%
+  count(trial)
+
+sales.raw %>%
+  count(quarter)
+
+sales.raw %>%
+  count(trial, quarter)
+```
+
+Six trial and six control stores, each observed in all four quarters — a balanced 2 × 4 repeated-measures design, as required for the aov() model below.
+
+```{r}
+sales <- sales.raw %>%
+  mutate(
+    Outlet_ID = as.factor(Outlet_ID),
+    location = as.factor(location),
+    trial_status = factor(
+      trial,
+      levels = c(FALSE, TRUE),
+      labels = c("Control stores", "Trial stores")
+    ),
+    quarter = factor(
+      quarter,
+      levels = c("Q1", "Q2", "Q3", "Q4")
+    ))
+```
+
+Outlet_ID is the repeated unit. trial_status is the between-outlet factor; quarter is the within-outlet factor ordered Q1–Q4. location is not modelled — with one outlet per location it is collinear with outlet identity and cannot be disentangled from outlet-level differences.
+
+Sales are summarised by the two design factors before modelling.
+
+```{r}
+sales %>%
+  group_by(trial_status, quarter) %>%
+  summarise(
+    n = n(),
+    mean_sales = mean(sales),
+    sd_sales = sd(sales),
+    .groups = "drop"
+  )
+```
+
+Before Q3, mean sales are comparable across groups (~£1.6M for both). After Q3, trial stores average ~£1.97M against ~£1.62M for control stores — a descriptive gap of approximately £350,000 that the formal model tests.
+
+```{r}
+ggplot(
+  sales,
+  aes(x = quarter, y = sales, group = Outlet_ID, colour = trial_status)
+) +
+  geom_line(alpha = 0.60) +
+  geom_point() +
+  geom_vline(xintercept = 2.5, lty = 3) +
+  facet_grid(~ trial_status) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title    = "Quarterly sales trajectories by trial status",
+    subtitle = "The dotted line marks the start of the trial at Q3",
+    x        = "Quarter",
+    y        = "Sales (£)",
+    colour   = "Trial status"
+  )
+```
+
+Each trial store shows a marked upward step at Q3; control store trajectories are broadly flat or declining. Between-outlet variability within groups is visible but substantially smaller than the post-Q3 divergence between groups. This supports the use of planned contrasts targeting the Q3 transition.
+
+A mixed repeated-measures ANOVA is specified with quarter as the within-outlet factor, trial_status as the between-outlet factor, and Outlet_ID as the repeated unit. The quarter:trial_status interaction is the primary NHST evidence — a significant interaction indicates that sales trajectories diverged between groups.
+
+```{r}
+m.sales.quarter.trial <- aov(
+  sales ~ quarter * trial_status + Error(Outlet_ID / quarter),
+  data = sales
+)
+
+summary(m.sales.quarter.trial)
+```
+
+The quarter:trial_status interaction is statistically significant, F(3, 30) = 11.33, p < .001, confirming that sales changed differently across quarters in trial versus control stores. The main effect of quarter is significant, F(3, 30) = 10.91, p < .001. The between-store effect of trial status is significant at the outlet stratum, F(1, 10) = 11.08, p = .008.
+
+```{r}
+emm.sales.quarter.by.trial <- emmeans(m.sales.quarter.trial,~ quarter | trial_status)
+
+confint(emm.sales.quarter.by.trial)
+```
+
+The emmeans balance warning is a structural artefact of the aov()/Error() syntax; the design is perfectly balanced and the estimates are reliable. Control store estimates are stable across all quarters (£1.55M–£1.67M). Trial store estimates increase from £1.58M at Q2 to £1.94M at Q3, sustaining at £2.00M through Q4. The 95% CIs do not overlap between groups at Q3 or Q4.
+
+```{r}
+emm.sales.plot <- summary(confint(emmeans(
+  m.sales.quarter.trial,
+  ~ quarter * trial_status
+)))
+
+ggplot(
+  emm.sales.plot,
+  aes(
+    x = quarter,
+    y = emmean,
+    ymin = lower.CL,
+    ymax = upper.CL,
+    group = trial_status,
+    colour = trial_status
+  )
+) +
+  geom_line() +
+  geom_point() +
+  geom_linerange() +
+  geom_vline(xintercept = 2.5, linetype = 3) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Estimated sales by quarter and trial status",
+    subtitle = "Error bars show 95% confidence intervals; dotted line marks trial start",
+    x = "Quarter",
+    y = "Estimated sales",
+    colour = "Trial status"
+  )
+```
+
+The trial-store trajectory diverges sharply from the control trajectory at Q3 and remains elevated through Q4, visualising the significant interaction.
+
+```{r}
+sales.contrasts <- tibble(
+  after.minus.before = c(-1/2, -1/2, 1/2, 1/2),
+  q3.minus.q2 = c(0, -1, 1, 0)
+)
+```
+
+after.minus.before weights Q3 and Q4 at +½ and Q1 and Q2 at −½, estimating the overall post-intervention average relative to pre-intervention. q3.minus.q2 estimates the immediate change at the point of intervention.
+
+```{r}
+sales.within.trial.contrasts <- contrast(
+  emm.sales.quarter.by.trial,
+  sales.contrasts
+)
+
+sales.within.trial.contrasts
+confint(sales.within.trial.contrasts)
+```
+
+Within control stores, neither contrast reaches significance: before-to-after = +£10,110, 95% CI [−£84,702, +£104,923], p = .829; Q3−Q2 = −£17,451, 95% CI [−£151,536, +£116,635], p = .792. Within trial stores, both contrasts are large and significant: before-to-after = +£362,821, 95% CI [+£268,009, +£457,634], p < .001; Q3−Q2 = +£356,152, 95% CI [+£222,067, +£490,238], p < .001.
+
+```{r}
+sales.between.trial.contrasts <- contrast(
+  sales.within.trial.contrasts,
+  method = list("Trial minus control" = c(-1, 1)),
+  by = "contrast"
+)
+
+sales.between.trial.contrasts
+confint(sales.between.trial.contrasts)
+```
+
+The trial-minus-control difference in before-to-after change is +£352,711, 95% CI [+£218,626, +£486,797], t(30) = 5.37, p < .001. The trial-minus-control Q3−Q2 difference is +£373,603, 95% CI [+£183,978, +£563,229], t(30) = 4.02, p < .001. Both contrasts confirm that trial stores experienced a materially larger sales increase, with the effect beginning immediately at Q3.
+
+```{r}
+contrast.plot.data <- summary(confint(sales.between.trial.contrasts))
+
+ggplot(
+  contrast.plot.data,
+  aes(
+    x    = contrast,
+    y    = estimate,
+    ymin = lower.CL,
+    ymax = upper.CL
+  )
+) +
+  geom_point() +
+  geom_linerange() +
+  geom_hline(yintercept = 0, lty = 3) +
+  scale_y_continuous(labels = scales::comma) +
+  coord_flip() +
+  labs(
+    title    = "Trial-minus-control difference in sales change",
+    subtitle = "Error bars show 95% confidence intervals; dotted line marks zero",
+    x        = "Contrast",
+    y        = "Estimated sales difference (£)"
+  )
+```
+
+Both confidence intervals lie entirely above zero, providing estimation evidence consistent with the NHST result.
+
+```{r}
+sales.change <- sales %>%
+  select(Outlet_ID, trial_status, quarter, sales) %>%
+  spread(quarter, sales) %>%
+  mutate(
+    before_mean = (Q1 + Q2) / 2,
+    after_mean = (Q3 + Q4) / 2,
+    after.minus.before = after_mean - before_mean,
+    q3.minus.q2 = Q3 - Q2
+  )
+
+sales.change
+```
+
+Outlet-level change scores reproduce the two planned contrasts at the store level, enabling verification via independent t-tests.
+
+```{r}
+sales.change %>%
+  group_by(trial_status) %>%
+  summarise(
+    n = n(),
+    mean_before = mean(before_mean),
+    mean_after = mean(after_mean),
+    mean_after_minus_before = mean(after.minus.before),
+    sd_after_minus_before = sd(after.minus.before),
+    mean_q3_minus_q2 = mean(q3.minus.q2),
+    sd_q3_minus_q2 = sd(q3.minus.q2),
+    .groups = "drop"
+  )
+```
+
+Grouped means confirm the model-based contrast pattern at the outlet level.
+
+```{r}
+t.test(after.minus.before ~ trial_status, data = sales.change)
+
+t.test(q3.minus.q2 ~ trial_status, data = sales.change)
+```
+
+Independent t-tests on outlet-level change scores corroborate the model-based contrasts: before-to-after, t(9.02) = −5.36, p < .001, 95% CI [−£501,548, −£203,874]; Q3−Q2, t(8.66) = −5.59, p < .001, 95% CI [−£525,592, −£221,614]. The t-test CIs are wider than the EMM contrast CIs as expected — they treat stores as independent rather than exploiting the within-outlet correlation structure.
+
+
+```{r}
+p.after.before <- ggplot(
+  sales.change,
+  aes(x = trial_status, y = after.minus.before)
+) +
+  geom_jitter(width = 0.08, height = 0, alpha = 0.70) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Before-to-after sales change",
+    x = "Trial status",
+    y = "After minus before sales"
+  )
+
+p.q3.q2 <- ggplot(
+  sales.change,
+  aes(x = trial_status, y = q3.minus.q2)
+) +
+  geom_jitter(width = 0.08, height = 0, alpha = 0.70) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Q2-to-Q3 sales change",
+    x = "Trial status",
+    y = "Q3 minus Q2 sales"
+  )
+
+grid.arrange(p.after.before, p.q3.q2, ncol = 2)
+```
+
+All six trial stores show positive before-to-after changes; control stores are mixed. The Q3−Q2 separation is equally clear. No single outlet appears to drive the group-level effect.
+
+```{r}
+m.sales.diagnostic <- lm(
+  sales ~ quarter * trial_status + Outlet_ID,
+  data = sales
+)
+
+sales.diagnostics <- tibble(
+  fitted_values = fitted(m.sales.diagnostic),
+  residuals     = resid(m.sales.diagnostic)
+)
+
+p.sales.resid <- ggplot(sales.diagnostics, aes(x = fitted_values, y = residuals)) +
+  geom_point(alpha = 0.40) +
+  geom_hline(yintercept = 0, lty = 3) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Sales model: residuals vs fitted values",
+    x     = "Fitted values",
+    y     = "Residuals"
+  )
+
+p.sales.qq <- ggplot(sales.diagnostics, aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line() +
+  labs(
+    title = "Sales model: Q-Q plot of residuals",
+    x     = "Theoretical quantiles",
+    y     = "Sample quantiles"
+  )
+
+grid.arrange(p.sales.resid, p.sales.qq, ncol = 2)
+```
+
+Outlet_ID is included as a fixed predictor in the diagnostic lm() solely to isolate within-store residuals; formal inference uses the aov() model above. Residuals show no systematic pattern across fitted values; the Q-Q plot is approximately linear. With only 12 outlets some deviation is expected and the model remains adequate for the planned contrasts.
+
+A mixed repeated-measures ANOVA reveals a significant quarter:trial_status interaction, F(3, 30) = 11.33, p < .001, confirming that quarterly sales trajectories diverged between trial and control stores at the point of intervention.
+
+Planned contrasts show that trial stores gained approximately £353,000 more than control stores in average before-to-after sales, 95% CI [+£219K, +£487K], p < .001, and £374,000 more in the immediate Q2-to-Q3 transition, 95% CI [+£184K, +£563K], p < .001. Control stores show no significant change on either contrast. Outlet-level t-tests corroborate both findings.
+
+Because trial allocation was random, the comparison between groups is credible as a causal estimate of the redesign's effect. The sample of 12 stores limits precision — the widest confidence interval spans approximately £380,000 — but all point estimates and intervals are consistent with a substantial positive effect of the new layout and signage on sales.
+
+---

@@ -1,0 +1,472 @@
+---
+title: 'Which London Underground line should trial a new cooling system?'
+author: 'Jashwanth Anand Shankar'
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+options(digits = 4)
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(gridExtra)
+library(ggplot2)
+library(kableExtra)
+library(knitr)
+library(data.table)
+```
+
+## Use of Generative AI
+
+Generative AI (Google Gemini) was used for code suggestions and proofreading. All analysis, interpretation and conclusions are my own.
+
+## Problem Statement: Evaluating London Underground Temperatures for Cooling System Trials
+
+This analysis looks at monthly average temperatures recorded across London Underground lines to support a policy decision on where to trial a new air‑cooling system. The task requires checking the integrity of the dataset, summarizing key statistics for each line, and comparing distributions of temperature values. Particular emphasis is placed on the Bakerloo and Central Lines, both overall and during summer months, to determine which line would be the most appropriate candidate for the cooling system pilot.
+
+## Data Dictionary
+
+The variables from the data provided are described in the table below
+
+| Variable | Description |
+|------------------------------------|------------------------------------|
+| ID | A unique identifier for each monthly temperature reading. |
+| Year | The year the temperature was recorded. |
+| Month | The calendar month the temperature was recorded (e.g., "January"). |
+| Line | The specific London Underground line being measured. |
+| Temp | The average temperature recorded for that line, month, and year. |
+
+------------------------------------------------------------------------
+
+# Section 1
+
+## Load data
+
+```{r}
+# Load temperature data from the provided CSV file.
+# This dataset likely contains readings from London Underground stations.
+london_underground <- read_csv("Underground.csv")
+
+# Display the first few rows to verify successful import and inspect structure.
+head(london_underground)
+```
+
+## Data Structure and Validation
+
+We conduct initial exploratory checks to validate the structure, content, and integrity of the dataset, ensuring a clear understanding of the data provided before proceeding with analysis.
+
+```{r}
+# Inspect the structure of the imported dataset.
+# This is a fundamental first step to verify:
+#   1. The total number of observations (rows) and variables (columns).
+#   2. The data type (e.g., chr, num, int) of each column.
+#   3. The first few values to ensure data loaded as expected. 
+str(london_underground)
+```
+```{r}
+# Extract all unique entries in the 'Line' column.
+# This helps validate categorical data by revealing:
+#   - Inconsistencies (e.g., "bakerloo" vs "Bakerloo")
+#   - Typos or unexpected values
+#   - Potential need for case standardization
+london_underground %>%
+  distinct(Line)
+```
+
+```{r}
+# Extract all unique entries in the 'Year' column.
+# This helps validate temporal data by revealing:
+#   - Range of years covered in the dataset
+#   - Potential inconsistencies (e.g., "2013" vs "13")
+#   - Non-numeric or malformed entries
+london_underground %>%
+  distinct(Year)
+```
+
+```{r}
+# Extract all unique entries in the 'Month' column.
+# This helps validate categorical time data by revealing:
+#   - Format consistency (e.g., "January" vs "Jan" vs 1)
+#   - Potential typos or irregular entries
+#   - Need for standardization before grouping or plotting
+london_underground %>%
+  distinct(Month)
+```
+
+## Missing Data (NA) Assessment
+
+We quantify and locate missing values (NAs) across all columns to assess data completeness and ensure the dataset is suitable for robust subsequent analysis.
+
+```{r}
+# Calculate the total NA values in every column.
+# This provides a fast, high-level summary of all missing data across the entire dataset, helping us identify which columns are affected.
+colSums(is.na(london_underground))
+```
+
+```{r}
+# Group the data by 'Line' and then count the number of missing 'Temp' values within each group
+# This is a more granular check. It tells us if missing temperature data is random or concentrated in specific lines,which  could bias our analysis.
+london_underground %>%
+  group_by(Line) %>%
+  summarize(missing_temp_count = sum(is.na(Temp)))
+```
+
+```{r}
+# Group the data by 'Line' and then count the number of missing 'ID' values within each group
+# This is again a more granular checks for any missing primary keys and, if so, which lines they are associated with.
+london_underground %>%
+  group_by(Line) %>%
+  summarize(missing_ID_count = sum(is.na(ID)))
+```
+
+```{r}
+# Identify rows with missing temperature values.
+# 'row_number()' adds an explicit row index for traceability.
+# This allows for manual inspection (spot-checking) of rows with missing data to look for other patterns (e.g., are they all from the same year or month or even from the same line?)
+london_underground %>% 
+  mutate(row_num = row_number()) %>%
+  filter(is.na(Temp))
+```
+
+```{r}
+# Spot-check rows with missing IDs.
+# 'row_number()' adds a reference index for traceability.
+# Allows for manual inspection of any records that are missing their primary key.
+london_underground %>% 
+  mutate(row_num = row_number()) %>%
+  filter(is.na(ID))
+```
+
+## Duplicating Record Check
+
+We perform a check for complete, row-for-row duplicates to ensure each observation in the dataset is uniquely represented and free from redundancy.
+
+```{r}
+# Check for rows that are identical across all columns, and then summate the resulting boolean vector
+sum(duplicated(london_underground))
+```
+
+## Visual Identification and Treatment of Temperature Outliers
+
+Here,We identify and examine extreme temperature values for each line across specific months and years to access whether these extreme values are rare, real temperature readings or the result of data errors.
+
+```{r}
+# Plot a line graph to visually highlight potential outliers or anomalies in the dataset.
+# This plot helps visualize the general seasonal trend and identify any data points that deviate significantly from that trend.
+london_underground %>%
+  drop_na(Temp) %>%
+  ggplot(aes(x = ID, y = Temp, color = Line, group = Line)) +
+  geom_line(alpha = 0.8) +
+  geom_point(alpha = 0.5, size = 2) +
+  labs(
+    title = "London Underground Temperature Over Time",
+    subtitle = "All temperature points plotted by line",
+    x = "Time (Months & Years)",
+    y = "Temperature (°C)",
+    color = "Line"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+The line graph above clearly shows six extreme data points. These points are visually distinct from the main cluster of data, which forms a uniform and continuous trend pattern across all months from 2013-2024. These six points appear to be outliers.
+
+Furthermore, We plot the same line graph again below, but with the y-axis limited to a range of 5°C to 50°C. This change excludes the extreme outliers and 'zooms in' on the continuous, wave-like trend of the main data. This zoomed-in view helps confirm that the vast majority of temperature readings fall within this 5°C-50°C range.
+
+```{r}
+# Re-plot the same time series, but zoom in on the main cluster of data by setting a fixed y-axis range from 5°C to 50°C
+# This effectively 'cuts off' the extreme outliers identified in the previous plot,allowing for a clearer view of the seasonal pattern within the typical temperature range.
+london_underground %>%
+  drop_na(Temp) %>%
+  ggplot(aes(x = ID, y = Temp, color = Line, group = Line)) +
+  geom_line(alpha = 0.8 ,linewidth = 1) +
+  geom_point(alpha = 0.5, size = 2) + 
+  geom_hline(yintercept = 50, linetype = "dashed", color = "red", linewidth = 1) + 
+  geom_hline(yintercept = 5, linetype = "dashed", color = "red", linewidth = 1) +
+  labs(
+    title = "London Underground Temperature Over Time",
+    subtitle = "All temperature points plotted by line",
+    x = "Time(Months & Years)",
+    y = "Temperature (°C)",
+    color = "Tube Line"
+  ) +
+  theme_minimal() +
+    theme(legend.position = "bottom") + 
+  ylim(5,50) #Thus,We can now confirm that most of the temperature values falls within the range of 5-50°C (Indicated by the red dashed lines)
+```
+
+```{r}
+#This small check is to confirm the count of outlier points lying outside the temperature range of 5°C-50°C by filtering the temperature values
+(count_outliers <- sum((london_underground$Temp < 5 | london_underground$Temp > 50),
+                       na.rm = TRUE))
+```
+
+```{r}
+# Identify and extract all temperature outliers (values below 5°C or above 50°C)
+# This tibble shows the exact outlier values along with their corresponding year, month, and line
+Outliers <- london_underground %>%
+  filter(Temp < 5 | Temp > 50)
+data.table(Outliers)
+```
+
+To ensure the reliability of our temperature analysis, we have decided to exclude extreme values identified in the 'Outliers' tibble. These readings are likely due to data recording errors and fall outside the limits of normal operating conditions
+
+- TFL00307 and TFL00440 recorded temperatures exceeding 100°C—above the boiling point of water and far beyond any feasible underground or human-safe environment.
+
+- TFL00121, TFL00452, TFL00530, and TFL00735 registered temperatures near 0°C. For TFL00530 and TFL00735,these readings occurred during summer months, making such low extremes physically implausible and indicative of recording errors.
+
+```{r}
+# Create a cleaned tibble by excluding extreme temperature values
+# Retain only observations where 'Temp' lies between 5°C and 50°C
+# Remove rows with missing values (NA) to ensure reliable analysis
+london_clean <- london_underground %>%
+  filter(!is.na(Temp) & Temp >= 5 & Temp <= 50)
+data.table(london_clean)
+```
+
+## Statistical Overview of London Underground Lines (All lines)
+
+We calculate the key descriptive statistics for all lines present in the filtered dataset (london_clean), prior to any further filtering and analysis
+
+
+```{r}
+# Group the data by 'Line' to perform calculations on each line individually.
+# We then use summarize() to calculate four key statistics:
+#   1. mean_temperature: The average temperature.
+#   2. std_dev_temperature: The standard deviation, a measure of temperature variability.
+#   3. lowest_temperature: The minimum recorded temperature.
+#   4. highest_temperature: The maximum recorded temperature.
+ summary_table <- london_clean %>%
+  group_by(`Line`) %>%
+  summarize(
+    mean_temperature = mean(Temp),
+    std_dev_temperature = sd(Temp),
+    lowest_temperature = min(Temp),
+    highest_temperature = max(Temp)
+  )
+data.table(summary_table)
+```
+
+
+## Data Preparation for plot visualization and t-test.
+
+As per the project requirements,the “Sub‑surface_lines” category is excluded from the dataset to ensure the focus remains on deep‑level lines. A new tibble, london_deeplines, is created containing only temperature observations from these deep‑level lines. This cleaned dataset will serve as the basis for all subsequent visualizations and statistical comparisons, including the t‑tests.
+
+```{r}
+# Exclude all rows where 'Line' is classified as Sub-Surface-Lines
+# Create a new tibble 'london_deeplines' containing only deep-level tube lines
+london_deeplines <- london_clean %>%
+   filter(Line != "Sub-surface_lines")
+data.table(london_deeplines)
+```
+
+We will use the london_deeplines tibble for all subsequent analysis and visualizations, as it represents the final cleaned dataset with outliers, missing values, and sub‑surface lines removed.
+
+## Statistical Overview of London Underground Lines (All lines - excluding sub-surface lines)
+
+This table presents the statistical overview of London Underground deep‑level lines, excluding the sub‑surface category. It summarizes the mean and standard deviation of recorded temperatures for each line, providing a clear basis for subsequent plot visualization and t‑test analysis.
+
+```{r}
+# Compute summary statistics for each London Underground line in 'london_deeplines'
+# Calculate the mean and standard deviation of recorded temperatures
+# Store results in 'summary_final' for use in subsequent t-test analysis and visualization
+summary_final <- london_deeplines %>%
+  group_by(`Line`) %>%
+  summarize(
+    mean_temperature_plot = mean(Temp),
+    std_dev_temperature_plot = sd(Temp)
+  )
+data.table(summary_final)
+```
+
+## Monthly Temperature Variation Across Deep Underground Lines (2013–2022)
+
+We present the violin plot of the filtered dataset (london_deeplines) to show monthly temperature distributions across individual Underground lines.Violin plot is used instead of histogram as they provide a smooth density representation and allow direct comparison across multiple categories in a compact format. To improve interpretability, the plots also overlay the mean temperature (point) and ±1 standard deviation (error bars), highlighting both central tendency and variability.
+
+```{r}
+# Create violin plot of temperature distributions by Deep Underground line
+# - Violin plot show the full distribution of recorded temperatures
+# - Jittered points represent individual observations
+# - Red points indicate mean temperature per line
+# - Red error bars represent ±1 standard deviation around the mean
+(temperature_plot <- ggplot(london_deeplines, aes(x = Line, y = Temp, fill = Line)) +
+  geom_violin(trim = FALSE, width = 0.6, scale = "count",alpha = 0.5, color = "grey30") +
+  geom_jitter(width = 0.15, alpha = 0.35, size = 1, color = "black") +
+  geom_point(data = summary_final, aes(x = Line, y = mean_temperature_plot), color = "red", size = 3, inherit.aes = FALSE) +
+  geom_errorbar(
+    data = summary_final,
+    aes(x = Line, ymin = mean_temperature_plot - std_dev_temperature_plot, ymax = mean_temperature_plot + std_dev_temperature_plot),
+    width = 0.6, color = "red", inherit.aes = FALSE
+  ) +
+  labs(
+    title = "Temperature distribution by Underground line (excluding Sub-Surface Lines)",
+    subtitle = "Violin plots with mean (red point) and ±1 SD (red error bars)",
+    x = "Line",
+    y = "Temperature (°C)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")) 
+```
+
+## T‑Test Comparison of Bakerloo vs Central Line Temperatures(All months)
+
+We perform a Statistical test (Known as t‑test) to evaluate whether a significant difference exists in mean recorded temperatures between the Bakerloo and Central lines across all months (2013–2022). An independent two‑sample t‑test is appropriate as it compares averages from two distinct groups, moving beyond descriptive summaries to provide statistical evidence on whether differences are random or reflect real disparities. For decision makers, these results are crucial in prioritizing interventions: if one line is consistently hotter, installation of the new air-cooling system can be directed towards the line where they are most needed.
+
+```{r}
+# Create a new tibble 'bakerloo_temp' by subsetting the main dataset (london_deeplines)
+# This tibble allows for direct statistical comparison with Central line in subsequent T-test.
+bakerloo_temp <- london_deeplines %>% 
+  filter(grepl("Bakerloo",Line))
+data.table(bakerloo_temp)
+```
+
+```{r}
+# Create a another new tibble 'Central' by subsetting the main dataset (london_deeplines)
+# This tibble allows for direct statistical comparison with Bakerloo Line in subsequent T-test.
+Central_temp <- london_deeplines %>% 
+  filter(grepl("Central",Line))
+data.table(Central_temp)
+```
+
+```{r}
+# Perform an independent two-sample t-test
+# Compare the mean 'Temp' values between two subsets:
+#   1. Central line observations
+#   2. Bakerloo line observations
+# The function t.test() automatically handles unequal variances (Welch’s t-test)
+# Output includes the test statistic, degrees of freedom, p-value,
+# and confidence interval for the difference in means
+(t_test_all_months <- t.test(bakerloo_temp$Temp,Central_temp$Temp))
+```
+
+## T‑Test Comparison of Bakerloo vs Central Line Temperatures(Only in the summer months)
+
+As before, the t-test compares the mean values from two independent groups, but here the subsets are limited to summer months (May-August).This approach helps decision makers determine whether higher summer temperatures increase the disparity between the two lines, offering clear evidence to guide cooling system installation during peak demand.
+
+```{r}
+# Define the set of months considered as "summer"
+
+summer_months <- c("May", "June", "July", "August")
+
+# Subset Bakerloo line data to retain only rows where 'Month' is in summer_months
+
+bakerloo_temp_summer <- bakerloo_temp %>%
+  filter(Month %in% summer_months)
+data.table(bakerloo_temp_summer)
+
+# Subset Central line data in the same way, isolating summer_months observations
+
+central_temp_summer <- Central_temp %>%
+  filter(Month %in% summer_months)
+
+data.table(central_temp_summer)
+
+```
+
+```{r}
+# Compare the mean 'Temp' values between two subsets:
+#   1. Central line observations
+#   2. Bakerloo line observations
+# The function t.test() automatically handles unequal variances (Welch’s t-test)
+# Output includes the test statistic, degrees of freedom, p-value,
+# and confidence interval for the difference in means
+
+(t_test_summer_months <- t.test(bakerloo_temp_summer$Temp, 
+                               central_temp_summer$Temp))
+```
+
+------------------------------------------------------------------------
+
+# Section 2
+
+## Overview
+
+This section presents the results of the statistical analysis of London Underground temperature data. The analysis focuses on deep‑level lines, as sub‑surface lines were excluded to ensure comparability. Outliers and missing values were removed to improve reliability, leaving a clean dataset (london_deeplines) for analysis. The findings are reported using standard statistical conventions, but are also explained in plain English to highlight their practical implications for decision‑making.
+
+## Descriptive Statistics
+
+Table 1 below summarises the mean and standard deviation of recorded temperatures for each deep‑level line. These figures provide an overview of the typical conditions passengers experience and the variability across lines.
+
+```{r, echo=FALSE}
+kable(summary_final, 
+      caption = "Table 1. Summary of Mean and Standard Deviation of Temperatures by Line",
+      digits = 2)
+```
+
+#### Interpretation:
+
+-   Lines such as the Central and Bakerloo show consistently higher mean temperatures compared to others.
+
+-   The Northern and Victoria lines also record elevated averages, though with slightly less variability.
+
+-   Standard deviations indicate that some lines (especially victoria,Waterloo and City & Central lines) experience greater fluctuations in temperature, which may affect passenger comfort and protection from overheating of the infrastructure unpredictably.
+
+## Statistical Testing
+
+#### 1. All‑Year Comparison (Bakerloo vs Central)
+
+-   The Welch Two‑Sample t‑test produced t(281.6) = 2.18, p = 0.030. Because the p‑value is below the conventional threshold of 0.05, we conclude that the difference in mean temperatures between the Bakerloo and Central lines is statistically significant.
+
+-   The Bakerloo line has an mean temperature of 26.82 °C compared to 26.11 °C on the Central line — a difference of about 0.7 °C. The 95% confidence interval (0.07 to 1.34 °C) indicates that the true difference is almost certainly positive, meaning Bakerloo is consistently hotter.
+
+-   Bakerloo trains are consistently warmer than Central trains across the year. The difference of \~0.7°C is meaningful and unlikely to be due to chance. This suggests that passengers on the Bakerloo Line may experience greater discomfort outside of summer, particularly during crowded peak hours.
+
+#### 2. Summer Months (May–August)
+
+-   The Welch Two‑Sample t‑test produced t(92.98) = 0.16, p = 0.875. Because the p‑value is far above the conventional threshold of 0.05, we conclude that there is no statistically significant difference in mean temperatures between the Bakerloo and Central lines during the summer months.
+
+-   The Bakerloo line has an average temperature of 28.74 °C compared to 28.68 °C on the Central line — a difference of only about 0.06 °C. The 95% confidence interval (‑0.69 to 0.81 °C) spans both negative and positive values, indicating that the true difference could be slightly cooler or slightly warmer on Bakerloo, but is effectively negligible.
+
+-   In summer, both lines converge at similarly high temperatures. The lack of a meaningful difference suggests that seasonal heat dominates, masking any underlying variation between the lines. Passengers therefore experience equally high levels of heat stress on both Bakerloo and Central during peak summer months.
+
+#### Intepretation:
+
+-   **Year‑round** : Targeted air cooling system installment may be most beneficial on the Bakerloo Line, where passengers consistently face higher temperatures.
+
+-   **Summer** : System‑wide strategies are required, as all lines converge at equally high levels of heat stress.
+
+In short, Bakerloo’s “extra warmth” matters outside of summer, but in peak heat periods, all passengers across both lines face similar challenges, highlighting the need for both line‑specific interventions and network‑wide summer resilience measure.
+
+## Visualisations
+
+Figure 1. illustrate the distribution of temperatures across deep underground lines in each year. Violin plot is used to highlight both the central tendency and the spread of values.
+
+```{r fig1, echo=FALSE, fig.cap="Figure 1. Temperature Distributions by Line"}
+library(ggplot2)
+
+ggplot(london_deeplines, aes(x = Line, y = Temp, fill = Line)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+  theme_minimal() +
+  labs(
+    title = "Temperature distributions for each line across every year",
+    x = "Underground Line",
+    y = "Temperature (°C)"
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold") # centers and bolds the title
+  )
+```
+
+The plot shows that the Central and Bakerloo lines are both hotter and more variable than other deep‑level lines, making them the most uncomfortable for passengers. Northern and Victoria also run warm, while Jubilee, Piccadilly, and Waterloo & City remain cooler and more stable. Overall, Central and Bakerloo should be prioritised for cooling interventions.
+
+## Implications for Policy and Operations
+
+-   **Priority lines** : Bakerloo and Central should be prioritised for cooling system installation, as they consistently record the hottest and most variable conditions.
+
+-   **Summer focus** : During peak months, both lines reach equally high temperatures, so interventions on either line would deliver substantial passenger comfort benefits and overheating issues.
+
+-   **Monitoring** : Northern and Victoria lines also show variability and should be monitored for potential spikes.
+
+-   **Resource allocation** : More stable lines (e.g., Jubilee, Piccadilly) can be addressed later once the most problematic lines are managed.
+
+## Conclusion
+
+The analysis demonstrates that temperature conditions vary significantly across deep‑level lines. Bakerloo is hotter than Central across the year, but both lines converge at equally high temperatures in summer. By prioritising cooling interventions on these lines, Transport for London can make data‑driven decisions that maximise passenger comfort and operational resilience.
+
+## Reference
+
+-  (Transport for London. (2022) Referencing. [online] Available from: https://tfl.gov.uk/info-for/media/press-releases/2022/july/tfl-trials-innovative-cooling-solution-designed-to-reduce-temperatures-on-the-tube-network# (Accessed 06 Nov 2025)
